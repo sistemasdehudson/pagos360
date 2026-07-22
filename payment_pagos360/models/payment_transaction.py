@@ -239,7 +239,11 @@ class PaymentTransaction(models.Model):
             return
 
         self.provider_reference = entity_id
-        paid_at = self._pagos360_get_paid_at_from_request(entity_name, entity_id)
+        # Prefer the paid_at already present in the received payload (debits carry it in
+        # request_result); only hit the API as a fallback for entities that don't.
+        paid_at = self._pagos360_extract_paid_at(payment_data.get("payload")) or (
+            self._pagos360_get_paid_at_from_request(entity_name, entity_id)
+        )
         if paid_at:
             self.pagos360_effective_payment_date = paid_at[:10]
         payment_status = payment_data.get("type")
@@ -315,6 +319,8 @@ class PaymentTransaction(models.Model):
             "payment_request": f"/payment-request?id={entity_id}",
             "card_adhesion": f"/card-adhesion/{entity_id}",
             "adhesion": f"/adhesion/{entity_id}",
+            "card_debit_request": f"/card-debit-request?id={entity_id}",
+            "debit_request": f"/debit-request?id={entity_id}",
         }
         endpoint = endpoint_by_entity.get(entity_name)
         if not endpoint:
@@ -411,7 +417,7 @@ class PaymentTransaction(models.Model):
                 return
             if self.token_id.pagos360_adhesion_type == "card_adhesion":
                 req = self._pagos360_card_debit_request()
-                self._process(self.provider_code, self.simulate_webhook("card_adhesion", req))
+                self._process(self.provider_code, self.simulate_webhook("card_debit_request", req))
             if self.token_id.pagos360_adhesion_type == "adhesion":
                 req = self._pagos360_debit_request()
             self.env.cr.commit()  # pylint: disable=invalid-commit
@@ -428,6 +434,7 @@ class PaymentTransaction(models.Model):
         data = {
             "card_debit_request": {
                 "description": _("Payment %s") % self.company_id.display_name,
+                "external_reference": self.reference,
                 "amount": self.amount,
                 "month": operation_date.month,
                 "year": operation_date.year,
@@ -448,6 +455,7 @@ class PaymentTransaction(models.Model):
         data = {
             "debit_request": {
                 "description": _("Payment %s") % self.company_id.display_name,
+                "external_reference": self.reference,
                 "first_total": self.amount,
                 # la fecha de vencimiento para cbu es un dia habil hay un sevicio para eso
                 "first_due_date": fields.Datetime.from_string(next_business_day[:10]).strftime("%d-%m-%Y"),
