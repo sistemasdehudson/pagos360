@@ -205,15 +205,21 @@ class PaymentTransaction(models.Model):
         """Override of payment to extract the amount and currency from the payment data."""
         if self.provider_code != "pagos360":
             return super()._extract_amount_data(payment_data)
+        payload = payment_data.get("payload", {})
+        if not any(payload.get(key) for key in ("request_result", "first_total", "amount")):
+            # Webhook notifications carry ids and the external reference only, and the API
+            # returns no request_result until the request is paid. Opt out of the amount
+            # check instead of reporting 0: core would set the transaction to error and
+            # return before _apply_updates, leaving the notification unprocessed.
+            return None
         amount = 0.0
         if not self.pagos360_adhesion_type:
-            request_result = payment_data.get("payload", {}).get("request_result", [])
-            for result in request_result:
+            for result in payload.get("request_result", []):
                 amount += result.get("amount", 0.0)
         elif self.pagos360_adhesion_type == "adhesion":
-            amount += payment_data.get("payload", {}).get("first_total", 0.0)
+            amount += payload.get("first_total", 0.0)
         elif self.pagos360_adhesion_type == "card_adhesion":
-            amount += payment_data.get("payload", {}).get("amount", 0.0)
+            amount += payload.get("amount", 0.0)
 
         return {
             "amount": amount,
