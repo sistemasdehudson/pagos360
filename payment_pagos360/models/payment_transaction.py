@@ -159,12 +159,42 @@ class PaymentTransaction(models.Model):
         :return: The transaction, if found.
         :rtype: recordset of `payment.transaction`
         """
+        payload = payment_data.get("payload", {})
+        entity_name = payment_data.get("entity_name")
+
+        # =====================================================================
+        # SDH 2026-08-10 - matcheo de eventos de debito ANTES de super()
+        # ---------------------------------------------------------------------
+        # La orden de debito NO puede llevar external_reference propio: la API
+        # de Pagos360 rechaza el alta con 400. Por lo tanto la orden hereda el
+        # external_reference de la ADHESION, y super() -que busca por
+        # reference- devuelve la tx de adhesion (ya en done) en vez de la del
+        # debito. El core la saltea ("Skipped ... already in state done") y la
+        # factura queda impaga.
+        #
+        # La tx del debito SI queda identificada: _pagos360_debit_request hace
+        # self.provider_reference = res["id"] al emitir. Por eso matcheamos por
+        # provider_reference y excluimos las tx de adhesion (operation
+        # 'validation'), que nunca son destino de un evento de debito.
+        #
+        # REVERTIR: si upstream mergea una solucion propia (ticket 123504),
+        # borrar este bloque y sincronizar el fork.
+        # =====================================================================
+        if provider_code == "pagos360" and entity_name in ["debit_request", "card_debit_request"]:
+            debit_tx = self.search(
+                [
+                    ("provider_reference", "=", str(payload.get("id"))),
+                    ("provider_code", "=", "pagos360"),
+                    ("operation", "!=", "validation"),
+                ],
+                limit=1,
+            )
+            if debit_tx:
+                return debit_tx
+
         tx = super()._search_by_reference(provider_code, payment_data)
         if provider_code != "pagos360" or tx:
             return tx
-
-        payload = payment_data.get("payload", {})
-        entity_name = payment_data.get("entity_name")
 
         if not entity_name:
             _logger.warning("PAGOS360: Received data with missing entity name.")
@@ -439,8 +469,11 @@ class PaymentTransaction(models.Model):
             operation_date = operation_date + relativedelta(months=1)
         data = {
             "card_debit_request": {
+                # SDH 2026-08-10: NO mandar external_reference. La API de Pagos360
+                # rechaza el alta con 400 "Este formulario no deberia contener
+                # campos adicionales". Campos permitidos: description, amount,
+                # month, year, card_adhesion_id, metadata.
                 "description": _("Payment %s") % self.company_id.display_name,
-                "external_reference": self.reference,
                 "amount": self.amount,
                 "month": operation_date.month,
                 "year": operation_date.year,
@@ -460,8 +493,11 @@ class PaymentTransaction(models.Model):
         next_business_day = self._pagos360_next_business_day(first_due_date)
         data = {
             "debit_request": {
+                # SDH 2026-08-10: NO mandar external_reference. Verificado contra
+                # sandbox: la API devuelve 400 "Este formulario no deberia contener
+                # campos adicionales". Campos permitidos: description, first_total,
+                # first_due_date, second_total, second_due_date, adhesion_id, metadata.
                 "description": _("Payment %s") % self.company_id.display_name,
-                "external_reference": self.reference,
                 "first_total": self.amount,
                 # la fecha de vencimiento para cbu es un dia habil hay un sevicio para eso
                 "first_due_date": fields.Datetime.from_string(next_business_day[:10]).strftime("%d-%m-%Y"),

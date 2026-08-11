@@ -1,6 +1,6 @@
 {
     "name": "Payment Provider: Pagos 360",
-    "version": "19.0.1.2.1",
+    "version": "19.0.1.2.2",
     "category": "Accounting/Payment Providers",
     "author": "Plugberry",
     "depends": ["account_payment"],
